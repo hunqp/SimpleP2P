@@ -32,21 +32,25 @@ static void sigProc(int sig) {
 }
 
 static void onSignalingMessage(struct mosquitto *mosq, void *arg, const struct mosquitto_message *message) {
-    nlohmann::json msgJs = nlohmann::json::parse((char *)message->payload);
+    nlohmann::json msg = nlohmann::json::parse((char *)message->payload);
 
     try {
-        int port = msgJs["Port"].get<int>();
-        std::string name = msgJs["Name"].get<std::string>();
-        std::string PubIP = msgJs["PublicIP"].get<std::string>();
-        std::string PrvIP = msgJs["PrivateIP"].get<std::string>();
-
-        std::cout << msgJs.dump(4) << std::endl;
+        int port = msg["port"].get<int>();
+        std::string name = msg["name"].get<std::string>();
+        std::string ippublic = msg["ip_public"].get<std::string>();
+        std::string ipprivate = msg["ip_private"].get<std::string>();
 
         if (name == machine) {
+            printf("-- FROM PUBLISHER --\r\n");
+            printf("Port      : %d\r\n", port);
+            printf("Machine   : %s\r\n", name.c_str());
+            printf("IP Public : %s\r\n", ippublic.c_str());
+            printf("IP Private: %s\r\n\r\n", ipprivate.c_str());
+            
             Candidate remote;
             remote.fPort = port;
-            remote.fPublicIP = PubIP;
-            remote.fPrivateIP = PrvIP;
+            remote.fPublicIP = ippublic;
+            remote.fPrivateIP = ipprivate;
 
             if (pc) {
                 pc->selectedCaindidatePair(&remote);
@@ -82,30 +86,34 @@ int main() {
     LOGP("[CONNECTED] Broker at %s:%d\n", configSIGNALINGSERVER, configSIGNALINGPORT);
 
     machine = randomId(5);
-    pc = new PeerConnection();
+    pc = new PeerConnection(SUBSCRIBER);
     Candidate candidate = pc->gatherLocalCandidates();
+
+    printf("[CREATE] %s (%s:%d)\r\n", machine.c_str(), candidate.fPublicIP.c_str(), candidate.fPort);
     
-    const nlohmann::json msgJs = {
-        {"Name"         , machine               },
-        {"Port"         , candidate.fPort       },
-        {"PublicIP"     , candidate.fPublicIP   },
-        {"PrivateIP"    , candidate.fPrivateIP  },
+    const nlohmann::json msg = {
+        {"name"         , machine               },
+        {"port"         , candidate.fPort       },
+        {"ip_public"    , candidate.fPublicIP   },
+        {"ip_private"   , candidate.fPrivateIP  },
     };
-    mosquitto_publish(mosq, NULL, configSIGNALING_TOPIC_REQ, msgJs.dump().length(), msgJs.dump().c_str(), 0, 0);
+    mosquitto_publish(mosq, NULL, configSIGNALING_TOPIC_REQ, msg.dump().length(), msg.dump().c_str(), 0, 0);
+
+    uint8_t Frame[1024 * 200];
 
     while (bLoop) {
 
         if (pc->gatheringState() == COMPLTED) {
-            char *ping = (char*)"PINGREQ";
-            pc->sendTo((uint8_t*)ping, strlen(ping));
-
-            char chars[32];
-            memset(chars, 0, sizeof(chars));
-            if (pc->readFrom((uint8_t*)chars, sizeof(chars)) > 0) {
-                printf("Pong message \"%s\" \r\n", chars);
+            memset(Frame, 0, sizeof(Frame));
+            int ret = pc->readFrom(Frame, sizeof(Frame));
+            if (ret > 0) {
+                printf("Received from \"publisher\" on message: \"%s\" \r\n", (char*)Frame);
             }
+
+            char *ping = (char*)"PING";
+            pc->sendTo((uint8_t*)ping, strlen(ping));
         }
-        
+
         sleep(1);
     }
 

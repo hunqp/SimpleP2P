@@ -1,6 +1,8 @@
 #ifndef PEER_CONNECTION_H
 #define PEER_CONNECTION_H
 
+#include <pthread.h>
+
 #include "main.h"
 #include "ults.h"
 
@@ -8,7 +10,14 @@ typedef enum {
     INITITAL,
     INPROGRESS,
     COMPLTED,
+    FAILED,
+    CLOSED,
 } GATHERING_STATE;
+
+typedef enum {
+    SUBSCRIBER,
+    PUBLISHER,
+} ROLE_REGISTRY;
 
 typedef struct {
     int fPort;
@@ -18,7 +27,7 @@ typedef struct {
 
 class PeerConnection {
 public:
-    PeerConnection();
+    PeerConnection(ROLE_REGISTRY role);
     ~PeerConnection();
 
     GATHERING_STATE gatheringState();
@@ -40,6 +49,9 @@ private:
 
     Candidate fCandidate;
     GATHERING_STATE fState;
+    ROLE_REGISTRY fRegister;
+
+    pthread_mutex_t fMutex;
 };
 
 #endif /* PEER_CONNECTION_H */

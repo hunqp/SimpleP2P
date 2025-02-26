@@ -1,19 +1,36 @@
 #include "peerconnection.h"
 
-PeerConnection::PeerConnection() {
-    createSocket();
+PeerConnection::PeerConnection(ROLE_REGISTRY role) {
+    if (createSocket() < 0) {
+        perror("createSocket()\r\n");
+    }
+    fRegister = role;
     fState = INITITAL;
+    fMutex = PTHREAD_MUTEX_INITIALIZER;
 }
 
 PeerConnection::~PeerConnection() {
     close(fFd);
+    pthread_mutex_destroy(&fMutex);
 }
 
 GATHERING_STATE PeerConnection::gatheringState() {
-    return fState;
+    pthread_mutex_lock(&fMutex);
+
+    auto ret = fState;
+
+    pthread_mutex_unlock(&fMutex);
+
+    return ret;
 }
 
 void PeerConnection::selectedCaindidatePair(Candidate * remoteCandiate) {
+    if (!remoteCandiate) {
+        return;
+    }
+    
+    pthread_mutex_lock(&fMutex);
+
     addrRemote.sin_family = AF_INET;
     addrRemote.sin_port = htons(remoteCandiate->fPort);
 
@@ -40,11 +57,15 @@ void PeerConnection::selectedCaindidatePair(Candidate * remoteCandiate) {
     }
     fState = INPROGRESS;
 
+    pthread_mutex_unlock(&fMutex);
+
     pthread_t createId;
     pthread_create(&createId, NULL, PeerConnection::iteratePunchingHole, this);
 }
 
 Candidate PeerConnection::gatherLocalCandidates() {
+    pthread_mutex_lock(&fMutex);
+
     char address[32];
 
     /* -- STUN Protocol to get IP Public -- */
@@ -59,17 +80,31 @@ Candidate PeerConnection::gatherLocalCandidates() {
 
     fCandidate.fPort = ntohs(addr.sin_port);
 
+    pthread_mutex_unlock(&fMutex);
+
     return fCandidate;
 }
 
 int PeerConnection::sendTo(uint8_t *data, uint32_t dataLen) {
+    pthread_mutex_lock(&fMutex);
+
     socklen_t addrRemoteLen = sizeof(addrRemote);
-    return sendto(fFd, data, dataLen, 0, (struct sockaddr *)&addrRemote, addrRemoteLen);
+    int ret = sendto(fFd, data, dataLen, 0, (struct sockaddr *)&addrRemote, addrRemoteLen);
+
+    pthread_mutex_unlock(&fMutex);
+
+    return ret;
 }
 
 int PeerConnection::readFrom(uint8_t *data, uint32_t dataLen) {
+    pthread_mutex_lock(&fMutex);
+
     socklen_t addrRemoteLen = sizeof(addrRemote);
-    return recvfrom(fFd, data, dataLen, 0, (struct sockaddr *)&addrRemote, &addrRemoteLen);
+    int ret = recvfrom(fFd, data, dataLen, 0, (struct sockaddr *)&addrRemote, &addrRemoteLen);
+
+    pthread_mutex_unlock(&fMutex);
+
+    return ret;
 }
 
 int PeerConnection::createSocket() {
@@ -83,8 +118,8 @@ int PeerConnection::createSocket() {
     addr.sin_port = 0; /* Let OS (Operating system) assign a port */
 
     struct timeval timeout;
-    timeout.tv_sec = 3;
-    timeout.tv_usec = 0;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 500000;
     setsockopt(fFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
     if (bind(fFd, (const struct sockaddr *)&addr, (socklen_t)sizeof(addr))) {
@@ -97,20 +132,42 @@ int PeerConnection::createSocket() {
 }
 
 void * PeerConnection::iteratePunchingHole(void *arg) {
+    #define PUNCHING_COMMAND_REQ        (char*)"UDP_HOLE_PUNCHING_REQ"
+    #define PUNCHING_COMMAND_RES        (char*)"UDP_HOLE_PUNCHING_RES"
+
     char chars[32];
     PeerConnection *pc = (PeerConnection *)arg;
-    socklen_t addrRemoteLen = sizeof(addrRemote);
-    const char *PUNCHING_COMMAND = "UDP_HOLE_PUNCHING";
 
     while (pc->gatheringState() != COMPLTED) {
-        pc->sendTo((uint8_t*)PUNCHING_COMMAND, strlen(PUNCHING_COMMAND));
-
-        memset(chars, 0, sizeof(chars));
-        if (pc->readFrom((uint8_t*)chars, sizeof(chars)) > 0) {
-            if (strcmp(chars, PUNCHING_COMMAND) == 0) {
-                pc->fState = COMPLTED;
-                break;
+        switch (pc->fRegister) {
+        case SUBSCRIBER: {
+            pc->sendTo((uint8_t*)PUNCHING_COMMAND_REQ, strlen(PUNCHING_COMMAND_REQ));
+            memset(chars, 0, sizeof(chars));
+            if (pc->readFrom((uint8_t*)chars, sizeof(chars)) > 0) {
+                if (strcmp(chars, PUNCHING_COMMAND_RES) == 0) {
+                    pc->fState = COMPLTED;
+                    printf("[SUBSCRIBER] COMPLTED\r\n");
+                }
             }
+            else perror("readFrom()");
+        }
+        break;
+
+        case PUBLISHER: {
+            memset(chars, 0, sizeof(chars));
+            if (pc->readFrom((uint8_t*)chars, sizeof(chars)) > 0) {
+                if (strcmp(chars, PUNCHING_COMMAND_REQ) == 0) {
+                    pc->sendTo((uint8_t*)PUNCHING_COMMAND_RES, strlen(PUNCHING_COMMAND_RES));
+                    pc->fState = COMPLTED;
+                    printf("[PUBLISHER] COMPLTED\r\n");
+                }
+            }
+            else perror("readFrom()");
+        }
+        break;
+        
+        default:
+        break;
         }
     }
 

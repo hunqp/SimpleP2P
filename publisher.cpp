@@ -5,7 +5,7 @@
 
 static bool bLoop = true;
 
-static std::unordered_map<std::string, PeerConnection*> clients;
+static std::unordered_map<std::string, std::shared_ptr<PeerConnection>> clients;
 
 const struct STUNServer ourSTUN = { 
     configSTUNSERVER, 
@@ -19,16 +19,16 @@ static void sigProc(int sig) {
 }
 
 static void onSignalingMessage(struct mosquitto *mosq, void *arg, const struct mosquitto_message *message) {
-    nlohmann::json msgJs = nlohmann::json::parse((char *)message->payload);
+    nlohmann::json msg = nlohmann::json::parse((char *)message->payload);
 
     try {
-        int port = msgJs["Port"].get<int>();
-        std::string name = msgJs["Name"].get<std::string>();
-        std::string PubIP = msgJs["PublicIP"].get<std::string>();
-        std::string PrvIP = msgJs["PrivateIP"].get<std::string>();
+        int port = msg["port"].get<int>();
+        std::string name = msg["name"].get<std::string>();
+        std::string PubIP = msg["ip_public"].get<std::string>();
+        std::string PrvIP = msg["ip_private"].get<std::string>();
 
-        std::cout << msgJs.dump(4) << std::endl;
         printf("-- PEER CONNECTION --\r\n");
+        printf("Port      : %d\r\n", port);
         printf("Machine   : %s\r\n", name.c_str());
         printf("IP Public : %s\r\n", PubIP.c_str());
         printf("IP Private: %s\r\n\r\n", PrvIP.c_str());
@@ -38,19 +38,20 @@ static void onSignalingMessage(struct mosquitto *mosq, void *arg, const struct m
         remote.fPublicIP = PubIP;
         remote.fPrivateIP = PrvIP;
 
-        PeerConnection *pc = new PeerConnection();
+        std::shared_ptr<PeerConnection> pc = std::make_shared<PeerConnection>(PUBLISHER);
         Candidate candidate = pc->gatherLocalCandidates();
+
+        msg.clear();
+        msg = {
+            {"name"         , name                  },
+            {"port"         , candidate.fPort       },
+            {"ip_public"    , candidate.fPublicIP   },
+            {"ip_private"   , candidate.fPrivateIP  },
+        };
+        mosquitto_publish(mosq, NULL, configSIGNALING_TOPIC_RES, msg.dump().length(), msg.dump().c_str(), 0, 0);
+
         pc->selectedCaindidatePair(&remote);
         clients.emplace(name, pc);
-
-        msgJs.clear();
-        msgJs = {
-            {"Name"         , name                  },
-            {"Port"         , candidate.fPort       },
-            {"PublicIP"     , candidate.fPublicIP   },
-            {"PrivateIP"    , candidate.fPrivateIP  },
-        };
-        mosquitto_publish(mosq, NULL, configSIGNALING_TOPIC_RES, msgJs.dump().length(), msgJs.dump().c_str(), 0, 0);
     }
     catch(const std::exception& e) {
         LOGE("%s\n", e.what());
